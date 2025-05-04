@@ -1,0 +1,70 @@
+{
+    "app": {
+        "name": "Tester Playwright",
+        "version": "1.0.0",
+        "width": 900,
+        "height": 700
+    },
+    "general": {
+        "log_level": "INFO",
+        "screenshot_path": "logs/screenshots",
+        "default_timeout": 30000,
+        "log_rotation": "10 MB",
+        "log_retention": "30 days"
+    },
+    "scenarios": [
+        {
+            "id": "urtica",
+            "name": "E-urtica faktury",
+            "description": "Pobieranie faktur z e-urtica.pl",
+            "active": true,
+            "url": "https://e-urtica.pl/authorization/login",
+            "settings": {
+                "login": "",
+                "password": "",
+                "weeks_to_process": 1,
+                "download_path": "./faktury",
+                "send_emails": true,
+                "email_recipient": "odbiorca@example.com",
+                "email_smtp_server": "smtp.example.com",
+                "email_smtp_port": 587,
+                "email_sender": "tester@example.com",
+                "email_password": "",
+                "email_use_tls": true,
+                "headless": false,
+                "download_base_path": "./faktury"
+            }
+        },
+        {
+            "id": "google",
+            "name": "Test Google",
+            "description": "Test strony Google",
+            "active": false,
+            "url": "https://www.google.com",
+            "settings": {
+                "headless": true,
+                "timeout": 10000
+            }
+        }
+    ],
+    "playwright": {
+        "headless": false,
+        "page_timeout": 10000,
+        "test_timeout": 600000,
+        "extra_delay": 1000,
+        "download_timeout": 15000,
+        "processing_timeout": 30000,
+        "log_level": "minimal",
+        "max_network_retries": 3,
+        "network_retry_delay": 5000,
+        "screenshot_path": "logs/screenshots",
+        "timeout": 30000
+    },
+    "email": {
+        "smtp_server": "smtp.example.com",
+        "smtp_port": 587,
+        "sender_email": "tester@example.com",
+        "password": "",
+        "use_tls": true
+    }
+}

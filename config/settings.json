@@ -32,7 +32,10 @@
                 "email_password": "",
                 "email_use_tls": true,
                 "headless": false,
-                "download_base_path": "./faktury"
+                "download_base_path": "./faktury",
+                "date_from": "2025-05-01",
+                "date_to": "2025-05-12",
+                "days_difference": 12
             }
         },
         {

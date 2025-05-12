@@ -762,6 +762,16 @@ class MainWindow(QMainWindow):
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         password_input_layout.addWidget(password_label)
         password_input_layout.addWidget(self.password_input)
+        
+        # Dodaj przycisk podglądu hasła
+        self.show_password_button = QPushButton()
+        self.show_password_button.setCheckable(True)
+        self.show_password_button.setFixedWidth(30)
+        self.show_password_button.setToolTip("Pokaż/ukryj hasło")
+        self.show_password_button.setIcon(self.style().standardIcon(3))  # QStyle.SP_DialogYesButton jako ikona oka
+        self.show_password_button.toggled.connect(self.toggle_password_visibility)
+        password_input_layout.addWidget(self.show_password_button)
+        
         login_form_layout.addLayout(password_input_layout)
         
         # Przycisk logowania
@@ -1214,6 +1224,12 @@ class MainWindow(QMainWindow):
         """Dodanie wiadomości do logów pobierania faktur."""
         self.invoice_log.append(message)
         logger.info(message)
+
+    def toggle_password_visibility(self, checked):
+        if checked:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Normal)
+        else:
+            self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

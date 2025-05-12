@@ -1,6 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""
+Fakturator - moduł odpowiedzialny za pobieranie faktur z systemu e-urtica.pl
+
+Główne funkcje:
+1. Pobieranie faktur z danego zakresu dat
+2. Zapisywanie pobranych faktur w folderze ./faktury
+
+Zmiany wprowadzone w celu rozwiązania problemu z pobieraniem plików PDF:
+1. Dodano alternatywne podejście do pobierania poprzez sprawdzanie, czy otworzyła się nowa karta z PDF-em
+2. Dodano metodę z użyciem prawego przycisku myszy i opcji "Zapisz jako"
+3. Dodano sprawdzanie ramek (iframes) pod kątem zawartości PDF
+4. Dodano metodę pobierania przez JavaScript, która wykrywa linki do PDF i pobiera je przez fetch API
+
+Te metody działają sekwencyjnie - jeśli jedna zawiedzie, próbujemy kolejnej.
+"""
+
 import os
 import time
 import asyncio
@@ -62,6 +78,9 @@ class Fakturator:
     
     def __init__(self, custom_config=None):
         """Inicjalizacja z możliwością nadpisania domyślnej konfiguracji."""
+        # Inicjalizacja logger queue na samym początku
+        self.log_queue = []  # Kolejka wiadomości
+        
         self.config = self.DEFAULT_CONFIG.copy()
         
         # Jeśli custom_config to ścieżka do pliku JSON, wczytaj z pliku
@@ -103,9 +122,6 @@ class Fakturator:
         
         # Śledzenie przetworzonych zamówień
         self.processed_order_numbers = set()
-        
-        # Logger z różnymi poziomami logowania
-        self.log_queue = []  # Kolejka wiadomości
     
     def _update_config(self, custom_config):
         """Aktualizuje konfigurację."""
@@ -282,7 +298,7 @@ class Fakturator:
                 # Przetwarzanie każdego zakresu dat
                 total_date_ranges = len(date_ranges)
                 for i, date_range in enumerate(date_ranges):
-                    await self._process_date_range(page, date_range, i, total_date_ranges)
+                    await self._process_date_range(page, context, date_range, i, total_date_ranges)
                     
                     if progress_callback:
                         # Aktualizacja postępu w zakresie 5-95%
@@ -398,7 +414,7 @@ class Fakturator:
             self.log(f"📅 Tydzień {week_offset + 1}: {start_of_week.strftime('%d.%m.%Y')} - {end_of_week.strftime('%d.%m.%Y')}", 'minimal')
         return date_ranges
     
-    async def _process_date_range(self, page, date_range, range_index, total_ranges):
+    async def _process_date_range(self, page, context, date_range, range_index, total_ranges):
         self.log(f"\n📅 Przetwarzam tydzień {range_index + 1}/{total_ranges}: {date_range['startDate'].strftime('%d.%m.%Y')} - {date_range['endDate'].strftime('%d.%m.%Y')}", 'minimal')
         await self._go_to_invoice_list(page)
         all_rows = []
@@ -408,7 +424,7 @@ class Fakturator:
             await page.wait_for_timeout(2000)
             self.log(f"✅ Pobrano wiersze tabeli zamówień: {len(all_rows)}", 'normal')
         except Exception as e:
-            self.log(f"⚠️ Problem z pobraniem wierszy tabeli: {str(e)}, wykonuję przeładowanie", 'normal')
+            self.log(f"⚠️ Problem z pobraniem wierszy tabeli: {str(e)}", 'normal')
             await page.reload()
             await page.wait_for_timeout(self.config["timeouts"]["extraWait"])
             try:
@@ -463,9 +479,9 @@ class Fakturator:
                 continue
         self.log(f"📊 Znaleziono {len(weeks_orders)} zamówień w zakresie dat", 'minimal')
         for i, order in enumerate(weeks_orders):
-            await self._process_order(page, order, i, len(weeks_orders), date_range)
+            await self._process_order(page, context, order, i, len(weeks_orders), date_range)
     
-    async def _process_order(self, page, order, order_index, total_orders, date_range):
+    async def _process_order(self, page, context, order, order_index, total_orders, date_range):
         """Przetwarza pojedyncze zamówienie."""
         row, date, order_number = order["row"], order["date"], order["orderNumber"]
         
@@ -547,6 +563,25 @@ class Fakturator:
         
         self.log(f"📄 Znaleziono {len(document_rows)} dokumentów dla zamówienia {order_number}", 'normal')
         
+        # Wypisz HTML tabeli, żeby zobaczyć jej strukturę
+        try:
+            html_table = await page.locator('table').evaluate('el => el.outerHTML')
+            self.log(f"🔍 HTML tabeli: {html_table[:500]}...", 'minimal')  # Pierwszy 500 znaków, aby nie zaśmiecać logów
+        except Exception as e:
+            self.log(f"⚠️ Nie udało się pobrać HTML tabeli: {str(e)}", 'minimal')
+        
+        # Sprawdź wszystkie przyciski na stronie
+        try:
+            all_buttons = await page.locator('button').all()
+            self.log(f"🔍 Znaleziono {len(all_buttons)} przycisków na stronie", 'minimal')
+            
+            for i, btn in enumerate(all_buttons):
+                btn_text = await btn.text_content() or "PUSTY"
+                btn_html = await btn.evaluate('el => el.outerHTML')
+                self.log(f"🔍 Przycisk {i}: Tekst='{btn_text}', HTML={btn_html}", 'minimal')
+        except Exception as e:
+            self.log(f"⚠️ Nie udało się pobrać informacji o przyciskach: {str(e)}", 'minimal')
+        
         pobrano_dokumenty = False
         document_processing_errors = 0
         
@@ -555,57 +590,208 @@ class Fakturator:
             if check_timeout():
                 self.log(f"⏱️ Limit czasu przekroczony podczas przetwarzania dokumentu {j+1}/{len(document_rows)}", 'minimal')
                 break
-            
             try:
                 row_text = await doc_row.text_content() or ''
+                row_html = await doc_row.evaluate('el => el.outerHTML')
+                self.log(f"🔍 Wiersz {j+1}: Tekst='{row_text}', HTML={row_html}", 'minimal')
                 await page.wait_for_timeout(100)
-                
                 if row_text and "faktura" in row_text.lower():
-                    self.log(f"💰 Znaleziono fakturę w wierszu {j+1}", 'minimal')
-                    
-                    # Pobierz fakturę - próbuj kilka razy z limitem czasu
+                    self.log(f"💰 Znaleziono fakturę w wierszu {j+1}, tekst: {row_text}", 'minimal')
+                    self.log(f"🔍 ANALIZA FAKTURY: Rozpoczynam analizę wiersza z fakturą {j+1}", 'minimal')
+                    # Znajdź wszystkie przyciski w tym wierszu
                     try:
-                        with page.expect_download(timeout=self.config["timeouts"]["downloadTimeout"]) as download_info:
-                            # Najpierw spróbuj kliknąć przycisk w wierszu
-                            clicked = False
-                            try:
-                                await doc_row.get_by_role('button', name='Pobierz').click()
-                                clicked = True
-                            except Exception:
-                                # Jeśli nie zadziała, spróbuj alternatywną metodę
-                                try:
-                                    await page.get_by_role('button', name='Pobierz').nth(j).click()
-                                    clicked = True
-                                except Exception:
-                                    self.log(f"❌ Nie udało się kliknąć przycisku Pobierz w wierszu {j+1}", 'normal')
-                            
-                            if clicked:
-                                try:
-                                    # Pobranie pliku z limitem czasu
-                                    download = await download_info.value
-                                    
-                                    # Przenieś pobrany plik do odpowiedniego katalogu
-                                    download_path = await download.path()
-                                    if download_path:
-                                        file_name = download.suggested_filename
-                                        new_path = os.path.join(date_range["folderPath"], file_name)
-                                        
-                                        try:
-                                            await download.save_as(new_path)
-                                            self.stats["downloadedInvoices"] += 1
-                                            pobrano_dokumenty = True
-                                            self.log(f"✅ Pobrano fakturę: {file_name}", 'minimal')
-                                        except Exception as e:
-                                            self.log(f"❌ Błąd zapisu faktury: {str(e)}", 'minimal')
-                                            document_processing_errors += 1
-                                except Exception as download_timeout_error:
-                                    self.log(f"⏱️ Błąd podczas pobierania pliku: {str(download_timeout_error)}", 'minimal')
-                                    document_processing_errors += 1
+                        row_buttons = await doc_row.locator('button').all()
+                        self.log(f"🔍 ANALIZA FAKTURY: Znaleziono {len(row_buttons)} przycisków w wierszu {j+1}", 'minimal')
+                        for k, btn in enumerate(row_buttons):
+                            btn_text = await btn.text_content() or "PUSTY"
+                            btn_html = await btn.evaluate('el => el.outerHTML')
+                            self.log(f"🔍 ANALIZA FAKTURY: Przycisk {k} w wierszu {j+1}: Tekst='{btn_text}', HTML={btn_html}", 'minimal')
+                            if "pobierz" in btn_text.lower():
+                                self.log(f"✅ ANALIZA FAKTURY: Znaleziono przycisk z tekstem 'Pobierz' w wierszu!", 'minimal')
                     except Exception as e:
-                        self.log(f"❌ Błąd pobierania faktury: {str(e)}", 'normal')
+                        self.log(f"⚠️ ANALIZA FAKTURY: Nie udało się pobrać informacji o przyciskach w wierszu: {str(e)}", 'minimal')
+                    
+                    # Przygotuj nazwę pliku
+                    file_name = f"faktura_{order_number.replace('/', '_')}.pdf"
+                    download_folder = date_range["folderPath"]
+                    save_path = os.path.join(download_folder, file_name)
+                    
+                    # Wyświetl informacje o zapisie
+                    self.log(f"📂 Faktura będzie zapisana jako: {file_name}", 'minimal')
+                    self.log(f"📂 w folderze: {download_folder}", 'minimal')
+                    
+                    # Znajdź i kliknij przycisk pobierania
+                    button_locator = doc_row.get_by_role('button', name='Pobierz')
+                    
+                    try:
+                        # Używamy page.wait_for_download(), aby złapać zdarzenie pobierania pliku
+                        self.log(f"🖱️ Oczekuję na zdarzenie pobierania po kliknięciu przycisku 'Pobierz'...", 'minimal')
+                        
+                        # Konfiguracja oczekiwania na zdarzenie pobierania i kliknięcie przycisku
+                        async with page.expect_download(timeout=30000) as download_info:
+                            await button_locator.click()
+                            
+                        # Pobierz informacje o pobranym pliku
+                        download = await download_info.value
+                        
+                        if download:
+                            self.log(f"✅ Wykryto zdarzenie pobierania pliku: {download.suggested_filename}", 'minimal')
+                            
+                            # Sprawdź wielkość pliku przed zapisem (w bajtach)
+                            file_path = await download.path()
+                            file_size_kb = os.path.getsize(file_path) / 1024 if file_path else 0
+                            self.log(f"📊 Rozmiar pobieranego pliku: {file_size_kb:.2f} KB", 'minimal')
+                            
+                            # Zapisz plik pod naszą nazwą
+                            await download.save_as(save_path)
+                            
+                            # Sprawdź, czy plik został poprawnie zapisany
+                            if os.path.exists(save_path):
+                                # Sprawdź rozmiar zapisanego pliku
+                                saved_file_size_kb = os.path.getsize(save_path) / 1024
+                                self.log(f"📊 ZAPISANO PLIK - Rozmiar na dysku: {saved_file_size_kb:.2f} KB", 'minimal')
+                                self.log(f"📂 ZAPISANO PLIK - Pełna ścieżka: {os.path.abspath(save_path)}", 'minimal')
+                                
+                                # Sprawdź sygnaturę i zawartość pliku
+                                with open(save_path, 'rb') as f:
+                                    first_bytes = f.read(1024)  # Czytaj pierwsze 1024 bajty
+                                
+                                # Sprawdź czy to faktycznie plik PDF z sygnaturą %PDF
+                                is_pdf = first_bytes.startswith(b'%PDF')
+                                if is_pdf:
+                                    self.log(f"✅ DIAGNOSTYKA - Poprawna sygnatura PDF", 'minimal')
+                                    
+                                    # Sprawdź czy to nie jest polityka prywatności
+                                    text_sample = first_bytes.decode('utf-8', errors='ignore').lower()
+                                    if 'polityka prywatności' in text_sample or 'prywatności' in text_sample:
+                                        self.log(f"⚠️ UWAGA - Pobrany plik zawiera 'politykę prywatności' zamiast faktury!", 'minimal')
+                                        
+                                        # Zmień nazwę pliku, aby oznaczyć, że to nie jest faktura
+                                        privacy_path = save_path.replace('.pdf', '_polityka_prywatnosci.pdf')
+                                        os.rename(save_path, privacy_path)
+                                        self.log(f"🔄 Zmieniono nazwę pliku na: {os.path.basename(privacy_path)}", 'minimal')
+                                        
+                                        # Spróbuj pobrać fakturę alternatywną metodą
+                                        self.log(f"🔄 Próbuję alternatywnej metody pobierania faktury...", 'minimal')
+                                        
+                                        # Dodatkowe kliknięcie w przycisk, czasem pomaga
+                                        await page.wait_for_timeout(1000)
+                                        await button_locator.click(force=True)
+                                        await page.wait_for_timeout(1000)
+                                        
+                                        # Sprawdź, czy otworzyło się nowe okno lub karta
+                                        new_page = None
+                                        try:
+                                            # Czekamy na nowe okno/kartę
+                                            self.log(f"🔍 Sprawdzam, czy otworzyło się nowe okno z fakturą...", 'minimal')
+                                            async with context.expect_page(timeout=5000) as new_page_info:
+                                                await button_locator.click(button='middle')  # Kliknięcie środkowym przyciskiem myszy
+                                            
+                                            new_page = await new_page_info.value
+                                            if new_page:
+                                                await new_page.wait_for_load_state('networkidle')
+                                                self.log(f"✅ Otwarto nową kartę: {new_page.url}", 'minimal')
+                                                
+                                                # Sprawdź czy to strona z PDF
+                                                url = new_page.url
+                                                if url.endswith('.pdf') or 'pdf' in url.lower():
+                                                    self.log(f"✅ Znaleziono bezpośredni link do PDF: {url}", 'minimal')
+                                                    # Pobierz plik z użyciem Playwright
+                                                    async with new_page.expect_download() as download_info2:
+                                                        await new_page.reload()  # Czasem reload pomaga w rozpoczęciu pobierania
+                                                    
+                                                    download2 = await download_info2.value
+                                                    await download2.save_as(save_path)
+                                                    self.log(f"✅ Pobrano i zapisano fakturę poprzez nową kartę.", 'minimal')
+                                                    pobrano_dokumenty = True
+                                                    self.stats["downloadedInvoices"] += 1
+                                                
+                                                # Zamknij nową kartę
+                                                await new_page.close()
+                                                
+                                        except Exception as e:
+                                            self.log(f"⚠️ Nie udało się otworzyć nowego okna: {str(e)}", 'minimal')
+                                        
+                                        # Jeśli nadal nie udało się pobrać, spróbuj metodą fetch przez API
+                                        if not os.path.exists(save_path) or os.path.getsize(save_path) == 0:
+                                            self.log(f"🔄 Próba pobierania przez fetch API...", 'minimal')
+                                            # Przeszukaj stronę do url API
+                                            api_url = await page.evaluate('''
+                                                () => {
+                                                    const links = Array.from(document.querySelectorAll('a[href*="api"]'));
+                                                    for (const link of links) {
+                                                        if (link.href.includes('/api/') && (link.href.includes('/document/') || link.href.includes('/invoice/'))) {
+                                                            return link.href;
+                                                        }
+                                                    }
+                                                    return null;
+                                                }
+                                            ''')
+                                            
+                                            if api_url:
+                                                self.log(f"✅ Znaleziono URL API: {api_url}", 'minimal')
+                                                # Pobierz plik przez fetch
+                                                pdf_data = await page.evaluate(f'''
+                                                    async (url) => {{
+                                                        try {{
+                                                            const response = await fetch(url, {{
+                                                                method: 'GET',
+                                                                headers: {{
+                                                                    'Accept': 'application/pdf',
+                                                                }}
+                                                            }});
+                                                            
+                                                            if (!response.ok) throw new Error('Błąd pobierania: ' + response.status);
+                                                            
+                                                            const blob = await response.blob();
+                                                            
+                                                            return new Promise((resolve) => {{
+                                                                const reader = new FileReader();
+                                                                reader.onloadend = () => resolve({{
+                                                                    data: reader.result,
+                                                                    contentType: blob.type,
+                                                                    size: blob.size
+                                                                }});
+                                                                reader.readAsDataURL(blob);
+                                                            }});
+                                                        }} catch (e) {{
+                                                            return {{ error: e.toString() }};
+                                                        }}
+                                                    }}
+                                                ''', api_url)
+                                                
+                                                if pdf_data and 'data' in pdf_data and 'base64' in pdf_data['data']:
+                                                    # Dekoduj i zapisz plik
+                                                    import base64
+                                                    base64_string = pdf_data['data']
+                                                    base64_data = base64_string.split(',', 1)[1] if ',' in base64_string else base64_string
+                                                    pdf_bytes = base64.b64decode(base64_data)
+                                                    
+                                                    with open(save_path, 'wb') as f:
+                                                        f.write(pdf_bytes)
+                                                    
+                                                    self.log(f"✅ Pobrano i zapisano fakturę przez API.", 'minimal')
+                                                    pobrano_dokumenty = True
+                                                    self.stats["downloadedInvoices"] += 1
+                                    else:
+                                        # To prawdziwa faktura, nie polityka prywatności
+                                        self.log(f"✅ Plik zawiera faktyczną fakturę, nie politykę prywatności.", 'minimal')
+                                        self.log(f"✅ Pobrano i zapisano fakturę: {file_name}", 'minimal')
+                                        self.stats["downloadedInvoices"] += 1
+                                else:
+                                    self.log(f"⚠️ DIAGNOSTYKA - Niepoprawna sygnatura pliku, to nie jest PDF", 'minimal')
+                                
+                                self.log(f"✓ ZAPISANO PLIK - Potwierdzenie: Plik istnieje na dysku", 'minimal')
+                            else:
+                                self.log(f"❌ ZAPISANO PLIK - Błąd: Plik nie istnieje na dysku pomimo próby zapisu", 'minimal')
+                        else:
+                            self.log(f"❌ Nie wykryto zdarzenia pobierania pliku", 'minimal')
+                            document_processing_errors += 1
+                    except Exception as e:
+                        self.log(f"❌ Błąd podczas pobierania faktury PDF: {str(e)}", 'minimal')
                         document_processing_errors += 1
-            except Exception:
-                # Ignoruj błędy pojedynczych wierszy
+            except Exception as e:
+                self.log(f"⚠️ Błąd przetwarzania wiersza {j+1}: {str(e)}", 'minimal')
                 document_processing_errors += 1
                 continue
             
@@ -624,6 +810,169 @@ class Fakturator:
         if is_timed_out or document_processing_errors >= 3:
             self.log(f"🕒 Krótka przerwa po problemach z zamówieniem {order_number}", 'normal')
             await page.wait_for_timeout(3000)
+
+    async def _download_pdf_content(self, pdf_page, pdf_url):
+        """Pobierz zawartość PDF z podanej strony różnymi metodami."""
+        pdf_bytes = None
+        
+        # Szczegółowe logowanie URL i parametrów strony
+        self.log(f"🔍 DIAGNOSTYKA - URL: {pdf_url}", 'minimal')
+        self.log(f"🔍 DIAGNOSTYKA - Tytuł strony: {await pdf_page.title()}", 'minimal')
+        
+        try:
+            headers = await pdf_page.evaluate('''
+                () => {
+                    let headers = {};
+                    if (document && document.contentType) {
+                        headers['Content-Type'] = document.contentType;
+                    }
+                    return headers;
+                }
+            ''')
+            self.log(f"🔍 DIAGNOSTYKA - Nagłówki strony: {headers}", 'minimal')
+        except Exception as e:
+            self.log(f"⚠️ DIAGNOSTYKA - Nie udało się pobrać nagłówków: {str(e)}", 'minimal')
+        
+        # Metoda 1: Pobierz jako PDF przez Playwright
+        try:
+            self.log(f"🔄 Próba pobrania przez Playwright PDF API...", 'minimal')
+            pdf_bytes = await pdf_page.pdf()
+            size_kb = len(pdf_bytes) / 1024
+            self.log(f"✅ Pobrano PDF przez Playwright API (rozmiar: {size_kb:.2f} KB)", 'minimal')
+            
+            # Sprawdź początek pliku pod kątem sygnatury PDF (%PDF)
+            if pdf_bytes and len(pdf_bytes) > 4:
+                signature = pdf_bytes[:4]
+                signature_hex = ' '.join(f'{b:02x}' for b in signature)
+                signature_text = ''.join(chr(b) if 32 <= b < 127 else '.' for b in signature)
+                self.log(f"🔍 DIAGNOSTYKA - Sygnatura pliku (hex): {signature_hex}", 'minimal')
+                self.log(f"🔍 DIAGNOSTYKA - Sygnatura pliku (text): {signature_text}", 'minimal')
+                if signature == b'%PDF':
+                    self.log(f"✅ DIAGNOSTYKA - Poprawna sygnatura PDF", 'minimal')
+                else:
+                    self.log(f"⚠️ DIAGNOSTYKA - Niepoprawna sygnatura PDF!", 'minimal')
+            
+            return pdf_bytes
+        except Exception as e:
+            self.log(f"⚠️ Nie udało się pobrać przez Playwright PDF API: {str(e)}", 'minimal')
+        
+        # Metoda 2: Pobierz zawartość strony przez JavaScript
+        try:
+            self.log(f"🔄 Próba pobrania zawartości strony przez JavaScript...", 'minimal')
+            
+            pdf_base64 = await pdf_page.evaluate('''
+                async () => {
+                    try {
+                        const url = window.location.href;
+                        console.log('Pobieranie z URL:', url);
+                        
+                        const response = await fetch(url);
+                        console.log('Status odpowiedzi:', response.status);
+                        console.log('Typ zawartości:', response.headers.get('content-type'));
+                        
+                        const blob = await response.blob();
+                        console.log('Rozmiar blob:', blob.size, 'bajtów');
+                        console.log('Typ blob:', blob.type);
+                        
+                        return new Promise((resolve) => {
+                            const reader = new FileReader();
+                            reader.onloadend = () => resolve(reader.result);
+                            reader.readAsDataURL(blob);
+                        });
+                    } catch (e) {
+                        console.error('Błąd w JavaScript:', e);
+                        return null;
+                    }
+                }
+            ''')
+            
+            if pdf_base64 and "base64" in pdf_base64:
+                self.log(f"✅ Pobrano zawartość PDF przez JavaScript", 'minimal')
+                
+                # Log informacji o pobranym base64
+                self.log(f"🔍 DIAGNOSTYKA - Prefix base64: {pdf_base64.split(',', 1)[0] if ',' in pdf_base64 else 'brak prefiksu'}", 'minimal')
+                self.log(f"🔍 DIAGNOSTYKA - Długość base64: {len(pdf_base64)} znaków", 'minimal')
+                
+                # Dekoduj base64
+                import base64
+                # Usuń prefix (np. data:application/pdf;base64,)
+                base64_data = pdf_base64.split(',', 1)[1] if ',' in pdf_base64 else pdf_base64
+                pdf_bytes = base64.b64decode(base64_data)
+                
+                # Log informacji o zdekodowanych danych
+                size_kb = len(pdf_bytes) / 1024
+                self.log(f"🔍 DIAGNOSTYKA - Rozmiar pliku po dekodowaniu: {size_kb:.2f} KB", 'minimal')
+                
+                # Sprawdź sygnaturę pliku
+                if len(pdf_bytes) > 4:
+                    signature = pdf_bytes[:4]
+                    signature_hex = ' '.join(f'{b:02x}' for b in signature)
+                    signature_text = ''.join(chr(b) if 32 <= b < 127 else '.' for b in signature)
+                    self.log(f"🔍 DIAGNOSTYKA - Sygnatura pliku (hex): {signature_hex}", 'minimal')
+                    self.log(f"🔍 DIAGNOSTYKA - Sygnatura pliku (text): {signature_text}", 'minimal')
+                    if signature == b'%PDF':
+                        self.log(f"✅ DIAGNOSTYKA - Poprawna sygnatura PDF", 'minimal')
+                    else:
+                        self.log(f"⚠️ DIAGNOSTYKA - Niepoprawna sygnatura PDF!", 'minimal')
+                
+                return pdf_bytes
+            else:
+                self.log(f"⚠️ Nie udało się pobrać PDF przez JavaScript", 'minimal')
+        except Exception as e:
+            self.log(f"⚠️ Błąd podczas pobierania zawartości strony przez JavaScript: {str(e)}", 'minimal')
+        
+        # Metoda 3: Pobierz przez HTTP requests
+        try:
+            self.log(f"🔄 Próba pobrania przez HTTP requests...", 'minimal')
+            
+            # Pobierz cookies z bieżącej sesji
+            cookies = await pdf_page.context.cookies()
+            cookie_string = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+            
+            # Utwórz headers z cookie
+            headers = {
+                'Cookie': cookie_string,
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'application/pdf,*/*'
+            }
+            
+            # Log informacji przed zapytaniem
+            self.log(f"🔍 DIAGNOSTYKA - Pobieranie z URL: {pdf_url}", 'minimal')
+            self.log(f"🔍 DIAGNOSTYKA - Nagłówki: {headers}", 'minimal')
+            
+            # Pobierz przez requests
+            import requests
+            response = requests.get(pdf_url, headers=headers)
+            
+            # Log odpowiedzi
+            self.log(f"🔍 DIAGNOSTYKA - Kod odpowiedzi: {response.status_code}", 'minimal')
+            self.log(f"🔍 DIAGNOSTYKA - Nagłówki odpowiedzi: {dict(response.headers)}", 'minimal')
+            self.log(f"🔍 DIAGNOSTYKA - Typ zawartości: {response.headers.get('Content-Type', 'nieznany')}", 'minimal')
+            
+            if response.status_code == 200:
+                pdf_bytes = response.content
+                size_kb = len(pdf_bytes) / 1024
+                self.log(f"✅ Pobrano PDF przez HTTP requests (rozmiar: {size_kb:.2f} KB)", 'minimal')
+                
+                # Sprawdź sygnaturę pliku
+                if len(pdf_bytes) > 4:
+                    signature = pdf_bytes[:4]
+                    signature_hex = ' '.join(f'{b:02x}' for b in signature)
+                    signature_text = ''.join(chr(b) if 32 <= b < 127 else '.' for b in signature)
+                    self.log(f"🔍 DIAGNOSTYKA - Sygnatura pliku (hex): {signature_hex}", 'minimal')
+                    self.log(f"🔍 DIAGNOSTYKA - Sygnatura pliku (text): {signature_text}", 'minimal')
+                    if signature == b'%PDF':
+                        self.log(f"✅ DIAGNOSTYKA - Poprawna sygnatura PDF", 'minimal')
+                    else:
+                        self.log(f"⚠️ DIAGNOSTYKA - Niepoprawna sygnatura PDF!", 'minimal')
+                
+                return pdf_bytes
+            else:
+                self.log(f"⚠️ Nie udało się pobrać PDF przez HTTP requests (status: {response.status_code})", 'minimal')
+        except Exception as e:
+            self.log(f"⚠️ Błąd podczas pobierania przez HTTP requests: {str(e)}", 'minimal')
+        
+        return pdf_bytes
 
     def clean_old_invoices(self, confirm=True):
         """

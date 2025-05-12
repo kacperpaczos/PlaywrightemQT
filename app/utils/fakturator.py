@@ -30,6 +30,8 @@ class Fakturator:
         
         # Konfiguracja pobierania faktur
         "weeksToProcess": 2,  # Liczba tygodni wstecz, z których chcemy pobierać faktury
+        "date_from": None,  # Data początkowa zakresu (w formacie YYYY-MM-DD), jeśli ustawiona, nadpisuje weeksToProcess
+        "date_to": None,    # Data końcowa zakresu (w formacie YYYY-MM-DD), jeśli ustawiona, nadpisuje weeksToProcess
         
         # Konfiguracja techniczna
         "timeouts": {
@@ -78,6 +80,15 @@ class Fakturator:
             self.config["password"] = config_manager.get_scenario_value("urtica", "password", self.config["password"])
             self.config["weeksToProcess"] = config_manager.get_scenario_value("urtica", "weeks_to_process", self.config["weeksToProcess"])
             self.config["downloadBasePath"] = config_manager.get_scenario_value("urtica", "download_path", self.config["downloadBasePath"])
+            
+            # Pobierz zakres dat, jeśli jest dostępny
+            date_from = config_manager.get_scenario_value("urtica", "date_from", None)
+            date_to = config_manager.get_scenario_value("urtica", "date_to", None)
+            
+            if date_from and date_to:
+                self.config["date_from"] = date_from
+                self.config["date_to"] = date_to
+                self.log(f"Ustawiono zakres dat: {date_from} - {date_to}", 'minimal')
             
             # Jeśli podano niestandardową konfigurację, zaktualizuj
             if custom_config:
@@ -338,10 +349,36 @@ class Fakturator:
         return False
     
     async def _calculate_date_ranges(self):
-        """Oblicza zakresy dat dla tygodni do przetworzenia (niedziela-sobota, jak w JS)."""
+        """Oblicza zakresy dat dla tygodni do przetworzenia lub używa niestandardowego zakresu dat."""
         today = datetime.now()
         date_ranges = []
-
+        
+        # Jeśli podano niestandardowy zakres dat, użyj go zamiast obliczania tygodni
+        if self.config["date_from"] and self.config["date_to"]:
+            try:
+                start_date = datetime.strptime(self.config["date_from"], "%Y-%m-%d")
+                end_date = datetime.strptime(self.config["date_to"], "%Y-%m-%d")
+                
+                # Ustaw godzinę początkową i końcową
+                start_date = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+                end_date = end_date.replace(hour=23, minute=59, second=59, microsecond=999999)
+                
+                # Utwórz folder dla zakresu dat
+                folder_path = await self._create_folder_for_date_range(start_date, end_date)
+                
+                date_ranges.append({
+                    "startDate": start_date,
+                    "endDate": end_date,
+                    "folderPath": folder_path
+                })
+                
+                self.log(f"📅 Niestandardowy zakres dat: {start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}", 'minimal')
+                return date_ranges
+                
+            except Exception as e:
+                self.log(f"❌ Błąd przy przetwarzaniu zakresu dat: {str(e)}, używam domyślnego obliczania tygodni", 'minimal')
+        
+        # Standardowe obliczanie tygodni, jeśli nie podano niestandardowego zakresu dat lub wystąpił błąd
         for week_offset in range(self.config["weeksToProcess"]):
             # Początek tygodnia (niedziela)
             start_of_week = today - timedelta(days=today.weekday() + 1 + (7 * week_offset))

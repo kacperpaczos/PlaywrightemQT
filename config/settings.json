@@ -22,7 +22,7 @@
             "settings": {
                 "login": "",
                 "password": "",
-                "weeks_to_process": 1,
+                "weeks_to_process": "1",
                 "download_path": "./faktury",
                 "send_emails": true,
                 "email_recipient": "odbiorca@example.com",

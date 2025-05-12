@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (QMainWindow, QVBoxLayout, QWidget, QPushButton,
                            QGroupBox, QLineEdit, QMessageBox, QFileDialog,
                            QTabWidget, QProgressBar, QSpinBox, QInputDialog,
                            QMenu, QApplication)
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDir, QTimer, QEvent
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QDir, QTimer, QEvent, QDate
 from PyQt6.QtGui import QIcon, QFont
 
 from app.utils.logger import setup_logger
@@ -171,16 +171,49 @@ class FakturatorWindow(QMainWindow):
         password_layout.addWidget(password_label)
         password_layout.addWidget(self.password_input)
         
-        # Liczba tygodni
-        weeks_layout = QHBoxLayout()
-        weeks_label = QLabel("Liczba tygodni do pobrania:")
-        self.weeks_spinbox = QSpinBox()
-        self.weeks_spinbox.setMinimum(1)
-        self.weeks_spinbox.setMaximum(8)
-        self.weeks_spinbox.setValue(int(self.config.get_scenario_value("urtica", "weeks_to_process", 2)))
-        weeks_layout.addWidget(weeks_label)
-        weeks_layout.addWidget(self.weeks_spinbox)
-        weeks_layout.addStretch()
+        # Liczba tygodni - zastąpienie wybieraczem zakresu dat
+        date_range_layout = QHBoxLayout()
+        date_range_label = QLabel("Zakres dat:")
+        date_range_layout.addWidget(date_range_label)
+        
+        # Widget wyboru daty od
+        self.date_from_label = QLabel("Od:")
+        date_range_layout.addWidget(self.date_from_label)
+        
+        from PyQt6.QtWidgets import QDateEdit
+        from PyQt6.QtCore import QDate
+        
+        self.date_from = QDateEdit()
+        self.date_from.setCalendarPopup(True)
+        # Ustaw domyślną datę na początek bieżącego miesiąca
+        current_date = QDate.currentDate()
+        start_date = QDate(current_date.year(), current_date.month(), 1)
+        self.date_from.setDate(start_date)
+        date_range_layout.addWidget(self.date_from)
+        
+        # Widget wyboru daty do
+        self.date_to_label = QLabel("Do:")
+        date_range_layout.addWidget(self.date_to_label)
+        
+        self.date_to = QDateEdit()
+        self.date_to.setCalendarPopup(True)
+        # Ustaw domyślną datę na dzisiaj
+        self.date_to.setDate(current_date)
+        date_range_layout.addWidget(self.date_to)
+        
+        # Dodaj przycisk odświeżania widoku zakresu dat
+        self.refresh_date_button = QPushButton("Odśwież")
+        self.refresh_date_button.clicked.connect(self.update_date_range_info)
+        date_range_layout.addWidget(self.refresh_date_button)
+        
+        # Informacja o zakresie dat
+        self.date_range_info = QLabel("")
+        date_range_layout.addWidget(self.date_range_info)
+        
+        date_range_layout.addStretch()
+        
+        # Aktualizuj informację o zakresie dat
+        self.update_date_range_info()
         
         # Ścieżka zapisu
         path_layout = QHBoxLayout()
@@ -328,7 +361,7 @@ class FakturatorWindow(QMainWindow):
         # Dodanie wszystkich sekcji do layoutu konfiguracji
         config_layout.addLayout(login_layout)
         config_layout.addLayout(password_layout)
-        config_layout.addLayout(weeks_layout)
+        config_layout.addLayout(date_range_layout)
         config_layout.addLayout(path_layout)
         config_layout.addWidget(email_group)
         config_layout.addLayout(options_layout)
@@ -509,7 +542,9 @@ class FakturatorWindow(QMainWindow):
         try:
             self.config.set_scenario_value("urtica", "login", self.login_input.text())
             self.config.set_scenario_value("urtica", "password", self.password_input.text())
-            self.config.set_scenario_value("urtica", "weeks_to_process", str(self.weeks_spinbox.value()))
+            self.config.set_scenario_value("urtica", "date_from", self.date_from.date().toString("yyyy-MM-dd"))
+            self.config.set_scenario_value("urtica", "date_to", self.date_to.date().toString("yyyy-MM-dd"))
+            self.config.set_scenario_value("urtica", "days_difference", str(self.date_from.date().daysTo(self.date_to.date()) + 1))
             self.config.set_scenario_value("urtica", "download_path", self.path_input.text())
             
             self.config.save_config()
@@ -571,11 +606,24 @@ class FakturatorWindow(QMainWindow):
                 QMessageBox.warning(self, "Ostrzeżenie", "Pobieranie faktur już trwa.")
                 return
             
+            # Sprawdź czy zakres dat jest poprawny
+            from_date = self.date_from.date()
+            to_date = self.date_to.date()
+            
+            if from_date > to_date:
+                QMessageBox.warning(self, "Błąd zakresu dat", "Data początkowa nie może być późniejsza niż data końcowa.")
+                return
+            
+            # Oblicz liczbę dni
+            days_difference = from_date.daysTo(to_date) + 1
+            
             # Przygotuj konfigurację
             custom_config = {
                 "login": self.login_input.text(),
                 "password": self.password_input.text(),
-                "weeks_to_process": self.weeks_spinbox.value(),
+                "date_from": from_date.toString("yyyy-MM-dd"),
+                "date_to": to_date.toString("yyyy-MM-dd"),
+                "days_difference": days_difference,
                 "download_path": self.path_input.text(),
                 "headless": self.headless_combo.currentText() == "Tak"
             }
@@ -609,11 +657,15 @@ class FakturatorWindow(QMainWindow):
             custom_config = {
                 'login': self.login_input.text(),
                 'password': self.password_input.text(),
-                'weeks_to_process': self.weeks_spinbox.value(),
+                'date_from': from_date.toString("yyyy-MM-dd"),
+                'date_to': to_date.toString("yyyy-MM-dd"),
+                'days_difference': days_difference,
                 'download_path': self.path_input.text(),
                 'headless': False
             }
-            self.config.set_scenario_value("urtica", **custom_config)
+            # Zapisz każdą wartość oddzielnie zamiast używać operatora **
+            for key, value in custom_config.items():
+                self.config.set_scenario_value("urtica", key, value)
             
             self.send_email_button.setEnabled(False)
             
@@ -1190,6 +1242,12 @@ class FakturatorWindow(QMainWindow):
                 self.show_playwright_menu()
                 return True
         return super().eventFilter(obj, event)
+
+    def update_date_range_info(self):
+        """Aktualizuje informację o zakresie dat."""
+        from_date = self.date_from.date().toString("yyyy-MM-dd")
+        to_date = self.date_to.date().toString("yyyy-MM-dd")
+        self.date_range_info.setText(f"Zakres dat: {from_date} - {to_date}")
 
 # Funkcja do utworzenia okna fakturatora
 def create_fakturator_window():

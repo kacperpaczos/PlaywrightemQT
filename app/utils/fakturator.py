@@ -29,6 +29,7 @@ from app.utils.config_manager import ConfigManager
 import threading
 import shutil
 import re
+import sys
 
 # Zastosowanie nest_asyncio pozwala na zagnieżdżanie pętli zdarzeń asyncio
 nest_asyncio.apply()
@@ -254,6 +255,14 @@ class Fakturator:
             "downloadedInvoices": 0,
             "errors": 0
         }
+        
+        # W środowisku PyInstaller próbujemy naprawić ścieżki do przeglądarek
+        if getattr(sys, 'frozen', False):
+            from app.utils.playwright_manager import PlaywrightManager
+            playwright_mgr = PlaywrightManager()
+            playwright_mgr.set_progress_callback(progress_callback)
+            # Próba naprawy ścieżek do przeglądarek
+            playwright_mgr.fix_executable_browser_path()
         
         # Główny blok kodu
         async with async_playwright() as p:

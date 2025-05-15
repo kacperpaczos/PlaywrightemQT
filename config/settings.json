@@ -20,8 +20,8 @@
             "active": true,
             "url": "https://e-urtica.pl/authorization/login",
             "settings": {
-                "login": "",
-                "password": "",
+                "login": "apteka@pcrsopot.pl",
+                "password": "Apteka2025!!",
                 "weeks_to_process": "1",
                 "download_path": "./faktury",
                 "send_emails": true,
@@ -34,8 +34,8 @@
                 "headless": false,
                 "download_base_path": "./faktury",
                 "date_from": "2025-05-01",
-                "date_to": "2025-05-12",
-                "days_difference": 12
+                "date_to": "2025-05-14",
+                "days_difference": 14
             }
         },
         {

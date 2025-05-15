@@ -1,4 +1,4 @@
-# Kolory dla lepszej czytelności
+﻿# Kolory dla lepszej czytelności
 $RED = [System.ConsoleColor]::Red
 $GREEN = [System.ConsoleColor]::Green
 $YELLOW = [System.ConsoleColor]::Yellow
@@ -21,13 +21,13 @@ function Print-Success {
 # Funkcja do wyświetlania komunikatów o błędach
 function Print-Error {
     param($text)
-    Write-Host "✗ $text" -ForegroundColor $RED
+    Write-Host "âś— $text" -ForegroundColor $RED
 }
 
-# Funkcja do wyświetlania ostrzeżeń
+# Funkcja do wyświetlania ostrzeń
 function Print-Warning {
     param($text)
-    Write-Host "⚠ $text" -ForegroundColor $YELLOW
+    Write-Host "âš  $text" -ForegroundColor $YELLOW
 }
 
 # Funkcja do sprawdzania czy komenda się powiodła

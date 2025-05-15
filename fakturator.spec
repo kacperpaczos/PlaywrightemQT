@@ -1,6 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 import platform
+import os
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, collect_all
 
 block_cipher = None
@@ -52,6 +53,28 @@ hidden_imports.extend(playwright_modules)
 # Zbieranie wszystkich zależności playwright
 playwright_data, playwright_binaries, playwright_hiddenimports = collect_all('playwright')
 
+# Dodanie plików DLL Python dla systemu Windows
+extra_binaries = []
+if platform.system() == 'Windows':
+    python_paths = [
+        os.path.expandvars(r'%LOCALAPPDATA%\Programs\Python\Python313'),
+        os.path.expandvars(r'%PROGRAMFILES%\Python\Python313'),
+        os.path.expandvars(r'%PROGRAMFILES(X86)%\Python\Python313')
+    ]
+    
+    # Sprawdź, która ścieżka istnieje
+    for python_path in python_paths:
+        python_dll = os.path.join(python_path, 'python313.dll')
+        if os.path.exists(python_dll):
+            extra_binaries.append((python_dll, '.'))
+            # Dodaj też inne potrzebne DLL
+            dll_files = ['python3.dll', 'vcruntime140.dll', 'vcruntime140_1.dll']
+            for dll in dll_files:
+                dll_path = os.path.join(python_path, dll)
+                if os.path.exists(dll_path):
+                    extra_binaries.append((dll_path, '.'))
+            break
+
 # Pliki danych
 datas = [
     ('app/resources/*', 'app/resources'),
@@ -69,6 +92,29 @@ runtime_hook_content = """
 
 import os
 import sys
+import platform
+
+# Dodaj ścieżkę do DLL Pythona dla systemów Windows
+if platform.system() == 'Windows':
+    python_home = os.environ.get('PYTHONHOME')
+    if not python_home:
+        # Próbuj znaleźć instalację Pythona
+        possible_paths = [
+            os.path.join(os.environ.get('LOCALAPPDATA', ''), 'Programs', 'Python', 'Python313'),
+            os.path.join(os.environ.get('PROGRAMFILES', ''), 'Python', 'Python313'),
+            os.path.join(os.environ.get('PROGRAMFILES(X86)', ''), 'Python', 'Python313')
+        ]
+        
+        for path in possible_paths:
+            if os.path.exists(path):
+                python_home = path
+                os.environ['PYTHONHOME'] = python_home
+                break
+    
+    if python_home:
+        # Dodaj ścieżkę Pythona do PATH
+        os.environ['PATH'] = python_home + os.pathsep + os.environ.get('PATH', '')
+        print(f"Dodano ścieżkę Pythona do PATH: {python_home}")
 
 # Dodaj ścieżkę do katalogu bieżącego na początek sys.path
 if not getattr(sys, 'frozen', False):
@@ -78,8 +124,9 @@ if not getattr(sys, 'frozen', False):
 try:
     import ipaddress
 except ImportError:
-    sys.stderr.write("OSTRZEŻENIE: Nie można zaimportować 'ipaddress'. Próba naprawy...\n")
-    sys.path.append(os.path.join(sys._MEIPASS, 'base_library.zip'))
+    sys.stderr.write("OSTRZEŻENIE: Nie można zaimportować 'ipaddress'. Próba naprawy...\\n")
+    if hasattr(sys, '_MEIPASS'):
+        sys.path.append(os.path.join(sys._MEIPASS, 'base_library.zip'))
 """
 
 with open('runtime_hook.py', 'w', encoding='utf-8') as f:
@@ -88,7 +135,7 @@ with open('runtime_hook.py', 'w', encoding='utf-8') as f:
 a = Analysis(
     ['app/main.py'],
     pathex=[],
-    binaries=playwright_binaries,
+    binaries=playwright_binaries + extra_binaries,
     datas=datas,
     hiddenimports=hidden_imports + playwright_hiddenimports,
     hookspath=[],

@@ -126,6 +126,10 @@ class FakturatorWindow(QMainWindow):
         super().__init__()
         self.config = ConfigManager()
         self.playwright_manager = PlaywrightManager()
+        
+        # Konfiguracja ścieżek Playwright przy starcie aplikacji
+        self.playwright_manager.configure_playwright_paths()
+        
         self.init_ui()
         
         # Inicjalizacja przycisku manager_playwright_button
@@ -817,6 +821,18 @@ class FakturatorWindow(QMainWindow):
         if success:
             QMessageBox.information(self, "Operacja Playwright", message)
             self.log(f"✅ {message}")
+            
+            # Dodatkowe naprawienie ścieżek po instalacji przeglądarek
+            self.log("🔧 Próbuję naprawić ścieżki przeglądarek po instalacji...")
+            try:
+                fixed = self.playwright_manager.configure_playwright_paths()
+                if fixed:
+                    self.log("✅ Ścieżki przeglądarek zostały naprawione")
+                else:
+                    self.log("⚠️ Nie udało się naprawić ścieżek przeglądarek - aplikacja może nie działać poprawnie")
+            except Exception as e:
+                self.log(f"❌ Błąd podczas naprawiania ścieżek: {str(e)}")
+            
             self.check_playwright_installation()  # Odśwież status
             # Aktualizacja przycisku po instalacji
             self.update_playwright_button({"playwright_installed": True})
